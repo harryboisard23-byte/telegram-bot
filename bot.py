@@ -6,7 +6,7 @@ import gspread
 import os
 import json
 
-TOKEN = "TON_TOKEN_ICI"
+TOKEN = "8709654109:AAGWu3dCOLYUssS46R-ZK27CBF_7dxJDh3o"
 
 # ==========================
 # GOOGLE SHEETS
