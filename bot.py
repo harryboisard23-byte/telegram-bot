@@ -1,153 +1,138 @@
 # -*- coding: utf-8 -*-
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from flask import Flask, request
 import gspread
-from datetime import datetime
 import os
 import json
 
-# ==========================
-# TOKEN
-# ==========================
-TOKEN = "8709654109:AAECEmsPRLZdxA3PmuI9F8N5uoDEagVARME"
+TOKEN = "8709654109:AAGWu3dCOLYUssS46R-ZK27CBF_7dxJDh3o"
 
 # ==========================
-# GOOGLE SHEETS (RENDER SAFE)
+# GOOGLE SHEETS
 # ==========================
 creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 gc = gspread.service_account_from_dict(creds_dict)
 
 sh = gc.open("trackovapbot")
 stock_sheet = sh.worksheet("Stock")
-vente_sheet = sh.worksheet("Vente")
 
 # ==========================
-# SAFE FLOAT
-# ==========================
-def to_float(val):
+def to_float(x):
     try:
-        return float(str(val).replace(",", "."))
+        return float(str(x).replace(",", "."))
     except:
         return 0.0
 
-# ==========================
-# LIRE STOCK
-# ==========================
 def lire_stock():
     data = stock_sheet.get_all_records()
-    stock = {}
-    for ligne in data:
-        nom = str(ligne.get("Goût", "")).strip().lower()
-        if nom:
-            stock[nom] = ligne
-    return stock
+    return {str(r.get("Goût","")).lower(): r for r in data if r.get("Goût")}
 
-# ==========================
-# FIND PRODUCT
-# ==========================
-def trouver_produit(stock, texte):
-    texte = texte.lower().replace(" ", "")
-    for nom in stock:
-        if texte in nom.replace(" ", ""):
-            return nom
+def trouver(stock, txt):
+    txt = txt.lower().replace(" ", "")
+    for k in stock:
+        if txt in k.replace(" ", ""):
+            return k
     return None
 
-# ==========================
-# UPDATE STOCK + CA + PROFIT
-# ==========================
-def update_stock(produit, quantite, prix):
-
+def update_stock(prod, qty, price):
     stock = lire_stock()
-    produit = trouver_produit(stock, produit)
+    prod = trouver(stock, prod)
 
-    if not produit:
+    if not prod:
         return False, "Produit introuvable"
 
-    infos = stock[produit]
+    infos = stock[prod]
 
-    stock_actuel = int(to_float(infos.get("Stock", 0)))
-
-    if quantite > stock_actuel:
+    stock_actuel = int(to_float(infos.get("Stock")))
+    if qty > stock_actuel:
         return False, "Stock insuffisant"
 
-    ligne = stock_sheet.find(produit).row
+    row = stock_sheet.find(prod).row
 
-    ancien_ca = to_float(infos.get("CA", 0))
-    ancien_profit = to_float(infos.get("Profit", 0))
-    prix_achat = to_float(infos.get("Prix achat", 0))
+    ca = to_float(infos.get("CA"))
+    profit = to_float(infos.get("Profit"))
+    prix_achat = to_float(infos.get("Prix achat"))
 
-    nouveau_ca = ancien_ca + prix
-    nouveau_profit = ancien_profit + (prix - prix_achat * quantite)
-    nouveau_stock = stock_actuel - quantite
+    new_stock = stock_actuel - qty
+    new_ca = ca + price
+    new_profit = profit + (price - prix_achat * qty)
 
-    # UPDATE SAFE (1 seule requête → évite API 400)
-    stock_sheet.update(
-        f"B{ligne}:E{ligne}",
-        [[nouveau_stock, prix_achat, nouveau_ca, nouveau_profit]]
-    )
+    stock_sheet.update(f"B{row}:E{row}", [[new_stock, prix_achat, new_ca, new_profit]])
 
-    return True, nouveau_stock
+    return True, new_stock
 
 # ==========================
-# HANDLER
+# TELEGRAM HANDLER
 # ==========================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower().strip()
 
-    # STOCK
     if text == "stock":
         stock = lire_stock()
         msg = "📦 STOCK:\n\n"
-        for k, v in stock.items():
-            msg += f"{k} → {v.get('Stock', 0)}\n"
+        for k,v in stock.items():
+            msg += f"{k} → {v.get('Stock',0)}\n"
         await update.message.reply_text(msg)
 
-    # CA
     elif text == "ca":
         stock = lire_stock()
-        total = sum(to_float(v.get("CA", 0)) for v in stock.values())
-        await update.message.reply_text(f"💰 CA TOTAL: {round(total,2)}€")
+        total = sum(to_float(v.get("CA")) for v in stock.values())
+        await update.message.reply_text(f"💰 CA: {round(total,2)}€")
 
-    # VENTE
     elif text.startswith("vente"):
-
         parts = text.split()
 
         if len(parts) < 4:
-            await update.message.reply_text("❌ Format: vente produit quantité prix")
+            await update.message.reply_text("❌ vente produit quantité prix")
             return
 
         try:
-            quantite = int(parts[-2])
-            prix = float(parts[-1].replace(",", "."))
-            produit = " ".join(parts[1:-2])
+            qty = int(parts[-2])
+            price = float(parts[-1].replace(",", "."))
+            prod = " ".join(parts[1:-2])
         except:
-            await update.message.reply_text("❌ Nombre invalide")
+            await update.message.reply_text("❌ erreur nombre")
             return
 
-        ok, res = update_stock(produit, quantite, prix)
+        ok, res = update_stock(prod, qty, price)
 
-        if not ok:
-            await update.message.reply_text(f"❌ {res}")
+        if ok:
+            await update.message.reply_text(f"✅ OK stock: {res}")
         else:
-            await update.message.reply_text(f"✅ Vente OK\nStock restant: {res}")
-
-    else:
-        await update.message.reply_text("❌ Commande inconnue")
+            await update.message.reply_text(f"❌ {res}")
 
 # ==========================
-# START BOT (FIX RENDER SAFE)
+# FLASK SERVER (WEBHOOK)
 # ==========================
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT, handle_message))
+app_flask = Flask(__name__)
+app_bot = ApplicationBuilder().token(TOKEN).build()
+app_bot.add_handler(MessageHandler(filters.TEXT, handle))
 
-    print("🤖 BOT ULTRA STABLE LANCÉ")
+@app_flask.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), app_bot.bot)
+    app_bot.update_queue.put_nowait(update)
+    return "ok"
 
-    # IMPORTANT : PAS D'ASYNCICI RUN ICI
-    app.run_polling()
+@app_flask.route("/")
+def home():
+    return "Bot running"
+
+# ==========================
+# START
+# ==========================
+if __name__ == "__main__":
+    PORT = int(os.environ.get("PORT", 10000))
+
+    app_bot.initialize()
+    app_bot.start()
+
+    # IMPORTANT : set webhook
+    app_bot.bot.set_webhook(url=f"https://TON-URL-RENDER.onrender.com/{TOKEN}")
+
+    app_flask.run(host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
