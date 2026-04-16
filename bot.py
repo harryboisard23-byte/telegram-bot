@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# -*- coding: utf-8 -*-
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
@@ -7,6 +6,7 @@ import gspread
 import os
 import json
 import traceback
+import sys
 
 # ==========================
 # CONFIGURATION
@@ -15,17 +15,44 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GOOGLE_CREDENTIALS = os.environ.get("GOOGLE_CREDENTIALS")
 
 # ==========================
+# VÉRIFICATIONS AU DÉMARRAGE
+# ==========================
+print("🔄 Démarrage du bot...")
+
+if not TOKEN:
+    print("❌ ERREUR: Variable TELEGRAM_TOKEN manquante")
+    sys.exit(1)
+
+if not GOOGLE_CREDENTIALS:
+    print("❌ ERREUR: Variable GOOGLE_CREDENTIALS manquante")
+    sys.exit(1)
+
+print(f"✅ TOKEN trouvé: {TOKEN[:10]}...")
+print(f"✅ CREDENTIALS trouvé: {len(GOOGLE_CREDENTIALS)} caractères")
+
+# ==========================
 # GOOGLE SHEETS
 # ==========================
 try:
-    creds_dict = json.loads(GOOGLE_CREDENTIALS)
+    # Nettoie le JSON (enlève retours à la ligne problématiques)
+    clean_creds = GOOGLE_CREDENTIALS.replace('\n', '\\n')
+    creds_dict = json.loads(clean_creds)
     gc = gspread.service_account_from_dict(creds_dict)
-    sh = gc.open("trackovapbot")  # ← Nom exact de ta Google Sheet
+    sh = gc.open("trackovapbot")
     stock_sheet = sh.worksheet("Stock")
     print("✅ Connexion Google Sheets OK")
+except json.JSONDecodeError as e:
+    print(f"❌ ERREUR JSON (credentials mal formatés): {e}")
+    print("💡 Astuce: Encode ton JSON en base64 ou mets-le sur une seule ligne")
+    sys.exit(1)
+except gspread.SpreadsheetNotFound:
+    print("❌ ERREUR: Spreadsheet 'trackovapbot' introuvable")
+    print("💡 Vérifie le nom et le partage avec le service account")
+    sys.exit(1)
 except Exception as e:
-    print(f"❌ Erreur Google Sheets: {e}")
+    print(f"❌ ERREUR Google Sheets: {e}")
     traceback.print_exc()
+    sys.exit(1)
 
 # ==========================
 # SAFE FLOAT
@@ -98,7 +125,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.lower().strip()
 
-    # AIDE
     if text == "aide":
         msg = """🤖 COMMANDES:
 
@@ -109,7 +135,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Exemple: vente fraise 2 15"""
         await update.message.reply_text(msg)
 
-    # STOCK
     elif text == "stock":
         try:
             stock = lire_stock()
@@ -122,7 +147,6 @@ Exemple: vente fraise 2 15"""
         except Exception as e:
             await update.message.reply_text(f"❌ Erreur: {e}")
 
-    # CA
     elif text == "ca":
         try:
             stock = lire_stock()
@@ -131,7 +155,6 @@ Exemple: vente fraise 2 15"""
         except Exception as e:
             await update.message.reply_text(f"❌ Erreur: {e}")
 
-    # VENTE
     elif text.startswith("vente"):
         parts = text.split()
 
@@ -163,25 +186,20 @@ Exemple: vente fraise 2 15"""
 # MAIN
 # ==========================
 def main():
-    if not TOKEN:
-        print("❌ TELEGRAM_TOKEN manquant")
-        return
-
-    if not GOOGLE_CREDENTIALS:
-        print("❌ GOOGLE_CREDENTIALS manquant")
-        return
-
     try:
+        print("🔄 Construction de l'application...")
         app = ApplicationBuilder().token(TOKEN).build()
         app.add_handler(MessageHandler(filters.TEXT, handle))
-        print("🤖 BOT LANCÉ")
-        app.run_polling()
+        print("🤖 BOT PRÊT - Lancement du polling...")
+        app.run_polling(drop_pending_updates=True)
     except Exception as e:
-        print(f"❌ ERREUR: {e}")
+        print(f"❌ ERREUR FATALE: {e}")
         traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
+
 
 
 if __name__ == "__main__":
