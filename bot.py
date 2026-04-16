@@ -10,7 +10,7 @@ import json
 # ==========================
 # TOKEN
 # ==========================
-TOKEN = "TON_TOKEN_ICI"
+TOKEN = "8709654109:AAECEmsPRLZdxA3PmuI9F8N5uoDEagVARME"
 
 # ==========================
 # GOOGLE SHEETS (RENDER SAFE)
