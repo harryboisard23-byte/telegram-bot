@@ -4,256 +4,190 @@ from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 import gspread
 from datetime import datetime
+import os
+import json
 
+# ==========================
+# CONFIG
+# ==========================
 TOKEN = "8709654109:AAGWu3dCOLYUssS46R-ZK27CBF_7dxJDh3o"
 
-gc = gspread.service_account(filename="credentials.json")
-sh = gc.open("trackovapbot")
+# ==========================
+# GOOGLE SHEETS (VERSION RENDER FIX)
+# ==========================
+creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+gc = gspread.service_account_from_dict(creds_dict)
 
+sh = gc.open("trackovapbot")
 stock_sheet = sh.worksheet("Stock")
 vente_sheet = sh.worksheet("Vente")
 
 # ==========================
-# CLAVIER
+# FONCTION SAFE FLOAT
 # ==========================
-keyboard = [
-    ["Vente", "Stock"],
-    ["CA"]
-]
-reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-# ==========================
-# ETAT USER
-# ==========================
-user_state = {}
-
-# ==========================
-# SAFE FLOAT (ULTRA FIX)
-# ==========================
-def safe_float(val):
+def to_float(val):
     try:
-        if val is None:
-            return 0.0
-
-        val = str(val)
-        val = val.replace(",", ".")
-        val = val.replace("€", "")
-        val = val.strip()
-
-        if val == "":
-            return 0.0
-
-        return float(val)
-
+        return float(str(val).replace(",", "."))
     except:
         return 0.0
 
 # ==========================
-# LECTURE STOCK
+# LIRE STOCK
 # ==========================
 def lire_stock():
     data = stock_sheet.get_all_records()
-    clean = {}
-
-    for row in data:
-        gout = str(row.get("Goût", "")).strip()
-        if gout:
-            clean[gout] = row
-
-    return clean
+    stock = {}
+    for ligne in data:
+        nom = str(ligne.get("Goût", "")).lower().strip()
+        if nom:
+            stock[nom] = ligne
+    return stock
 
 # ==========================
-# RECHERCHE PRODUIT
+# TROUVER PRODUIT (SMART)
 # ==========================
-def find_product(stock, recherche):
-    r = recherche.lower().replace(" ", "")
-
-    for k in stock.keys():
-        if r in k.lower().replace(" ", ""):
-            return k
-
+def trouver_produit(stock, texte):
+    texte = texte.lower()
+    for nom in stock:
+        if texte in nom:
+            return nom
     return None
 
 # ==========================
-# UPDATE STOCK (SAFE)
+# AJOUTER VENTE
 # ==========================
-def update_stock(produit, quantite, prix):
-
+def ajouter_vente(produit, quantite, prix_total, user):
     stock = lire_stock()
-    produit_trouve = find_product(stock, produit)
 
-    if not produit_trouve:
+    if produit not in stock:
         return False, "Produit introuvable"
 
-    infos = stock[produit_trouve]
+    ligne_index = list(stock.keys()).index(produit) + 2
 
-    stock_dispo = int(safe_float(infos.get("Stock")))
+    stock_actuel = int(stock[produit].get("Stock", 0))
+    prix_achat = to_float(stock[produit].get("Prix achat", 0))
+    ancien_ca = to_float(stock[produit].get("CA", 0))
+    ancien_profit = to_float(stock[produit].get("Profit", 0))
 
-    if quantite > stock_dispo:
+    if quantite > stock_actuel:
         return False, "Stock insuffisant"
 
-    nouvelle_qte = stock_dispo - quantite
+    nouveau_stock = stock_actuel - quantite
+    nouveau_ca = ancien_ca + prix_total
+    profit = prix_total - (prix_achat * quantite)
+    nouveau_profit = ancien_profit + profit
 
-    cell = stock_sheet.find(produit_trouve)
-    row = cell.row
+    # ✅ UPDATE SAFE (UN SEUL BLOC → PAS D’ERREUR 400)
+    stock_sheet.update(f"B{ligne_index}:E{ligne_index}", [[
+        nouveau_stock,
+        prix_achat,
+        nouveau_ca,
+        nouveau_profit
+    ]])
 
-    # 🔥 SAFE colonnes
-    ancien_ca = safe_float(
-        infos.get("Chiffre d affaires")
-        or infos.get("CA")
-    )
-
-    ancien_profit = safe_float(infos.get("Profit"))
-
-    prix_achat = safe_float(
-        infos.get("Prix achat")
-    )
-
-    # 🔥 calcul
-    ca = ancien_ca + prix
-    profit = ancien_profit + (prix - (prix_achat * quantite))
-
-    # 🔥 update sans bug API
-    stock_sheet.update(f"B{row}", [[nouvelle_qte]])
-    stock_sheet.update(f"D{row}", [[ca]])
-    stock_sheet.update(f"E{row}", [[profit]])
-
-    return True, (produit_trouve, nouvelle_qte)
-
-# ==========================
-# LOG VENTE
-# ==========================
-def log_vente(produit, quantite, prix, user):
+    # Historique
     date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    vente_sheet.append_row([date, produit, quantite, prix, user])
+    vente_sheet.append_row([date, produit, quantite, prix_total, user])
+
+    return True, nouveau_stock
 
 # ==========================
-# DASHBOARD
+# CALCUL CA TOTAL
 # ==========================
-def dashboard():
-    stock = lire_stock()
-
-    ca = 0
-    profit = 0
+def calcul_ca_total():
+    data = stock_sheet.get_all_records()
     total = 0
+    for ligne in data:
+        total += to_float(ligne.get("CA", 0))
+    return total
 
-    for v in stock.values():
-
-        ca += safe_float(
-            v.get("Chiffre d affaires")
-            or v.get("CA")
-        )
-
-        profit += safe_float(v.get("Profit"))
-
-        try:
-            total += int(safe_float(v.get("Stock")))
-        except:
-            total += 0
-
-    return ca, profit, total
+# ==========================
+# BOUTONS
+# ==========================
+keyboard = ReplyKeyboardMarkup(
+    [["📦 Stock", "💰 CA"]],
+    resize_keyboard=True
+)
 
 # ==========================
 # HANDLER
 # ==========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        text = update.message.text.lower().strip()
+        user = update.message.from_user.first_name
 
-    user_id = update.message.from_user.id
-    text = update.message.text.strip()
+        # ======================
+        # STOCK
+        # ======================
+        if text in ["stock", "📦 stock"]:
+            stock = lire_stock()
+            msg = "📦 STOCK :\n\n"
 
-    # MENU
-    if text.lower() in ["start", "/start", "menu"]:
-        user_state[user_id] = None
-        await update.message.reply_text("👋 Menu", reply_markup=reply_markup)
-        return
+            for nom, infos in stock.items():
+                msg += f"{nom} → {infos.get('Stock', 0)}\n"
 
-    # VENTE
-    if text.lower() == "vente":
-        user_state[user_id] = {"step": "produit"}
-        await update.message.reply_text("🛒 Produit ?")
-        return
+            await update.message.reply_text(msg, reply_markup=keyboard)
 
-    # STOCK
-    if text.lower() == "stock":
-        stock = lire_stock()
-        msg = "📦 STOCK:\n\n"
+        # ======================
+        # CA
+        # ======================
+        elif text in ["ca", "💰 ca"]:
+            total = calcul_ca_total()
+            await update.message.reply_text(
+                f"💰 CA TOTAL : {round(total,2)}€",
+                reply_markup=keyboard
+            )
 
-        for k, v in stock.items():
-            msg += f"{k}: {int(safe_float(v.get('Stock')))} | CA: {safe_float(v.get('Chiffre d affaires'))}€ | Profit: {safe_float(v.get('Profit'))}€\n"
+        # ======================
+        # VENTE
+        # ======================
+        elif text.startswith("vente"):
 
-        await update.message.reply_text(msg, reply_markup=reply_markup)
-        return
+            parts = text.split()
 
-    # CA
-    if text.lower() == "ca":
-        ca, profit, total = dashboard()
+            if len(parts) < 3:
+                await update.message.reply_text("❌ Format: vente produit quantité prix")
+                return
 
-        await update.message.reply_text(
-            f"📊 DASHBOARD\n\n💰 CA: {ca}€\n📈 Profit: {profit}€\n📦 Stock: {total}",
-            reply_markup=reply_markup
-        )
-        return
-
-    # FLOW VENTE
-    if user_id in user_state and user_state[user_id]:
-
-        state = user_state[user_id]
-
-        if state["step"] == "produit":
-            state["produit"] = text
-            state["step"] = "quantite"
-            await update.message.reply_text("📦 Quantité ?")
-            return
-
-        elif state["step"] == "quantite":
+            # 🔥 FIX PARSING
             try:
-                state["quantite"] = int(text)
+                quantite = int(parts[-2])
+                prix = float(parts[-1].replace(",", "."))
+                produit_txt = " ".join(parts[1:-2])
             except:
                 await update.message.reply_text("❌ Nombre invalide")
                 return
 
-            state["step"] = "prix"
-            await update.message.reply_text("💰 Prix total ?")
-            return
+            stock = lire_stock()
+            produit = trouver_produit(stock, produit_txt)
 
-        elif state["step"] == "prix":
-            try:
-                state["prix"] = float(text.replace(",", "."))
-            except:
-                await update.message.reply_text("❌ Prix invalide")
+            if not produit:
+                await update.message.reply_text("❌ Produit introuvable")
                 return
 
-            success, result = update_stock(
-                state["produit"],
-                state["quantite"],
-                state["prix"]
-            )
+            success, result = ajouter_vente(produit, quantite, prix, user)
 
-            if not success:
+            if success:
+                await update.message.reply_text(
+                    f"✅ Vente OK\n{produit} -{quantite}\nStock restant: {result}",
+                    reply_markup=keyboard
+                )
+            else:
                 await update.message.reply_text(f"❌ {result}")
-                user_state[user_id] = None
-                return
 
-            user = update.message.from_user.username or "inconnu"
-            log_vente(state["produit"], state["quantite"], state["prix"], user)
+        else:
+            await update.message.reply_text("❌ Commande inconnue", reply_markup=keyboard)
 
-            prod, stock_restant = result
-
-            await update.message.reply_text(
-                f"✅ Vente OK\n{prod}\n-{state['quantite']}\nStock: {stock_restant}",
-                reply_markup=reply_markup
-            )
-
-            user_state[user_id] = None
-            return
-
-    await update.message.reply_text("❌ Utilise les boutons", reply_markup=reply_markup)
+    except Exception as e:
+        print("ERREUR :", e)
+        await update.message.reply_text(f"💥 Erreur : {e}")
 
 # ==========================
-# RUN
+# START BOT
 # ==========================
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
-print("🤖 BOT 100% SAFE ANTI APOSTROPHE OK")
+print("🤖 BOT ULTRA STABLE LANCÉ")
 app.run_polling()
