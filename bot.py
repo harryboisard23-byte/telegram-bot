@@ -11,7 +11,7 @@ import sys
 # ==========================
 # CONFIGURATION
 # ==========================
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TOKEN = os.environ.get("8709654109:AAGWu3dCOLYUssS46R-ZK27CBF_7dxJDh3o")
 GOOGLE_CREDENTIALS = os.environ.get("GOOGLE_CREDENTIALS")
 
 # ==========================
